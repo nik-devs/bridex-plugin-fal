@@ -44,7 +44,7 @@ const requestBase = (endpointId, requestId) => `${QUEUE}/${appId(endpointId)}/re
 const resolveRef = (ref) => String(ref ?? "").replace(/\$\{([A-Z0-9_]+)\}/g, (_, n) => process.env[n] ?? "");
 
 export default async function activate(ctx) {
-  const cfg = { api_key: "${FAL_KEY}", default_wait_s: 600, ...(ctx.config ?? {}) };
+  const cfg = { api_key: "${FAL_KEY}", default_wait_s: 180, ...(ctx.config ?? {}) };
   const key = () => {
     const k = resolveRef(cfg.api_key);
     if (!k) throw new Error("FAL_KEY is not set — add the fal.ai key under Settings → Integrations (or plugins.fal.config.api_key)");
@@ -154,11 +154,12 @@ export default async function activate(ctx) {
     return v;
   }
 
-  async function finish(call, endpointId, requestId, note, responseUrl) {
+  async function finish(call, endpointId, requestId, note, responseUrl, trackedId) {
     const result = await falJson(responseUrl ?? requestBase(endpointId, requestId), {}, 120_000);
     const artifacts = await saveOutputs(call, endpointId, requestId, result, note);
     const costUsd = await estimateCost(endpointId);
     ctx.usage.record({ workspace: call.workspace, agent: call.agent, kind: "fal", model: endpointId, costUsd });
+    if (trackedId && ctx.jobs) ctx.jobs.settle(trackedId, { status: "succeeded", result: { artifacts, costUsd } });
     return json({
       request_id: requestId,
       status: "COMPLETED",
@@ -279,6 +280,12 @@ export default async function activate(ctx) {
         body: JSON.stringify(input),
       });
       ctx.log.info(`@${call.agent} fal ${endpointId} → request ${sub.request_id}`);
+      // tracked from the first second (core ≥ external_jobs): a restart
+      // mid-wait loses neither the request nor the money — the watcher
+      // finishes it and wakes the agent
+      const tracked = ctx.jobs
+        ? ctx.jobs.track({ workspace: call.workspace, agent: call.agent, taskId: call.taskId, sessionKey: call.sessionKey, runId: call.runId, externalId: sub.request_id, model: endpointId, label: note })
+        : null;
       // the submit reply carries the canonical request URLs — use them rather
       // than rebuilding paths (the queue addresses the app, not the route)
       const statusUrl = `${sub.status_url ?? `${requestBase(endpointId, sub.request_id)}/status`}?logs=1`;
@@ -287,7 +294,7 @@ export default async function activate(ctx) {
       let last = null;
       while (Date.now() - started < waitMs) {
         last = await falJson(statusUrl, {}, 30_000);
-        if (last.status === "COMPLETED") return finish(call, endpointId, sub.request_id, note, responseUrl);
+        if (last.status === "COMPLETED") return finish(call, endpointId, sub.request_id, note, responseUrl, tracked);
         await new Promise((r) => setTimeout(r, POLL_MS));
       }
       return json({
@@ -295,7 +302,9 @@ export default async function activate(ctx) {
         status: last?.status ?? "IN_QUEUE",
         queue_position: last?.queue_position,
         last_log: last?.logs?.at(-1)?.message,
-        hint: `still running after ${Math.round(waitMs / 1000)}s — call fal_result with this request_id (the work continues on fal's side)`,
+        hint: ctx.jobs
+          ? `still running after ${Math.round(waitMs / 1000)}s — end your turn if nothing else is pending: you will be WOKEN when it lands (or poll fal_result)`
+          : `still running after ${Math.round(waitMs / 1000)}s — call fal_result with this request_id (the work continues on fal's side)`,
       });
     },
   });
@@ -314,9 +323,10 @@ export default async function activate(ctx) {
       const rid = String(args.request_id);
       const waitMs = Number(args.wait_s ?? 0) * 1000;
       const started = Date.now();
+      const tracked = ctx.jobs ? ctx.jobs.pending().find((j) => j.externalId === rid)?.id : null;
       for (;;) {
         const st = await falJson(`${requestBase(endpointId, rid)}/status?logs=1`, {}, 30_000);
-        if (st.status === "COMPLETED") return finish(call, endpointId, rid, String(args.note ?? ""));
+        if (st.status === "COMPLETED") return finish(call, endpointId, rid, String(args.note ?? ""), undefined, tracked);
         if (Date.now() - started >= waitMs) return json({ request_id: rid, status: st.status, queue_position: st.queue_position, last_log: st.logs?.at(-1)?.message });
         await new Promise((r) => setTimeout(r, POLL_MS));
       }
@@ -334,5 +344,47 @@ export default async function activate(ctx) {
     },
   });
 
-  ctx.log.info("fal.ai tools registered (fal_models, fal_schema, fal_upload, fal_run, fal_result, fal_cancel)");
+  // Reboot-proof: pending requests from external_jobs are polled here, so a
+  // run that died mid-wait (restart, crash, wait budget) still gets its
+  // outputs saved and the agent woken in the session it came from.
+  if (ctx.jobs && ctx.wakeAgent) {
+    const watcher = setInterval(async () => {
+      for (const j of ctx.jobs.pending()) {
+        if (Date.now() - Date.parse(j.createdAt) > 6 * 3_600_000) {
+          ctx.jobs.settle(j.id, { status: "failed", error: "gave up after 6h" });
+          continue;
+        }
+        const call = { workspace: j.workspace, agent: j.agent, runId: null, sessionKey: j.sessionKey, taskId: j.taskId };
+        try {
+          const st = await falJson(`${requestBase(j.model, j.externalId)}/status`, {}, 30_000);
+          if (st.status !== "COMPLETED") continue;
+          const done = await finish(call, j.model, j.externalId, j.label || `${j.model} · request ${j.externalId}`, undefined, j.id);
+          const out = JSON.parse(done.content[0].text);
+          ctx.wakeAgent({
+            workspace: j.workspace,
+            agent: j.agent,
+            key: `fal-job:${j.id}`,
+            ...(j.sessionKey ? { sessionKey: j.sessionKey } : {}),
+            prompt: `Your fal.ai request ${j.externalId} (${j.model}${j.label ? ` — ${j.label}` : ""}) finished while you were away: outputs ${(out.artifacts || []).map((a) => `artifacts/${a}`).join(", ") || "(none saved — see result)"}. Check them (video_understand for clips), then deliver or continue the task${j.taskId ? ` (${j.taskId})` : ""}.`,
+          });
+        } catch (err) {
+          const msg = String(err && err.message ? err.message : err);
+          // 4xx from fal means the request is dead; transient errors keep polling
+          if (!/fal 4\d\d/.test(msg)) { ctx.log.warn(`fal job ${j.externalId}: ${msg}`); continue; }
+          ctx.jobs.settle(j.id, { status: "failed", error: msg.slice(0, 300) });
+          ctx.wakeAgent({
+            workspace: j.workspace,
+            agent: j.agent,
+            key: `fal-job:${j.id}`,
+            ...(j.sessionKey ? { sessionKey: j.sessionKey } : {}),
+            prompt: `Your fal.ai request ${j.externalId} (${j.model}) FAILED while you were away: ${msg.slice(0, 300)}. Decide whether to retry with cheaper settings or report the blocker.`,
+          });
+        }
+      }
+    }, 15_000);
+    watcher.unref();
+    ctx.onShutdown(() => clearInterval(watcher));
+  }
+
+  ctx.log.info(`fal.ai tools registered (fal_models, fal_schema, fal_upload, fal_run, fal_result, fal_cancel)${ctx.jobs ? " + job watcher" : ""}`);
 }

@@ -32,7 +32,7 @@ plugins:
 | `fal_models` | free | search the catalog by text / category → endpoint ids |
 | `fal_schema` | free | input + output schema of one endpoint (names, enums, defaults, required) |
 | `fal_upload` | free | local file (artifacts/… or workspace path) → CDN URL for `image_url`/`video_url`/`audio_url` inputs (≤ 90 MB) |
-| `fal_run` | **paid** | submit to the queue, wait (default 10 min), download outputs into `artifacts/<task>/`, record the spend |
+| `fal_run` | **paid** | submit to the queue, wait (default 3 min), download outputs into `artifacts/<task>/`, record the spend. The request is tracked in the instance DB from the first second: if the run dies or the wait runs out, the plugin's watcher finishes it and **wakes the agent** in the session it came from — a server restart loses neither the request nor the money |
 | `fal_result` | — | status / result of a request that outlived the wait; downloads outputs the same way |
 | `fal_cancel` | — | cancel a queued request that has not started |
 

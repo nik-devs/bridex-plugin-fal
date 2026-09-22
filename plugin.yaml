@@ -4,7 +4,7 @@
 # artifacts with provenance and records spend — in-process facilities that a
 # catalog "tool" plugin (out-of-process, flat schemas) does not have.
 name: fal
-version: 0.1.1
+version: 0.2.0
 kind: integration
 description: Any fal.ai model through the queue API — free discovery (fal_models, fal_schema), CDN upload, run/result/cancel; outputs land in the task's artifacts with provenance and cost estimate.
 entry: index.mjs
