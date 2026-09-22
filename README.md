@@ -22,7 +22,7 @@ plugins:
   fal:
     config:
       api_key: ${FAL_KEY}      # default
-      default_wait_s: 600      # how long fal_run waits before handing back a request_id
+      default_wait_s: 180      # how long fal_run waits before handing back a request_id
 ```
 
 ## Tools

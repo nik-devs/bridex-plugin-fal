@@ -4,9 +4,26 @@
 # artifacts with provenance and records spend — in-process facilities that a
 # catalog "tool" plugin (out-of-process, flat schemas) does not have.
 name: fal
-version: 0.2.0
+version: 0.2.1
 kind: integration
-description: Any fal.ai model through the queue API — free discovery (fal_models, fal_schema), CDN upload, run/result/cancel; outputs land in the task's artifacts with provenance and cost estimate.
+description: Any fal.ai model for agents — video, image, audio. Outputs land in the task's artifacts with a cost estimate.
 entry: index.mjs
 requires_env:
   - FAL_KEY   # managed credential: Settings → Integrations → fal.ai key
+config_schema:
+  type: object
+  properties:
+    api_key:
+      type: string
+      title: API key
+      secret: true
+      credential: FAL_KEY
+      placeholder: "${FAL_KEY}"
+      description: Leave empty to use the fal.ai key from Settings → Integrations
+    default_wait_s:
+      type: integer
+      title: Wait before handing back, s
+      default: 180
+      minimum: 10
+      maximum: 1500
+      description: How long fal_run waits for a result before returning a request_id
