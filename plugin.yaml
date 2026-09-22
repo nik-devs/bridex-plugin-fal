@@ -1,0 +1,12 @@
+# fal — any fal.ai model for agents (video, image, audio, whatever the catalog
+# carries) through the queue API, no marketplace policy layer in between.
+# kind MUST stay "integration": the plugin writes outputs into workspace
+# artifacts with provenance and records spend — in-process facilities that a
+# catalog "tool" plugin (out-of-process, flat schemas) does not have.
+name: fal
+version: 0.1.0
+kind: integration
+description: Any fal.ai model through the queue API — free discovery (fal_models, fal_schema), CDN upload, run/result/cancel; outputs land in the task's artifacts with provenance and cost estimate.
+entry: index.mjs
+requires_env:
+  - FAL_KEY   # managed credential: Settings → Integrations → fal.ai key
