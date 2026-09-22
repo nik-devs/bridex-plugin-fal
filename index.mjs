@@ -33,6 +33,14 @@ const MIME_BY_EXT = Object.fromEntries(Object.entries(EXT_BY_MIME).map(([m, e]) 
 MIME_BY_EXT.jpeg = "image/jpeg";
 MIME_BY_EXT.m4v = "video/mp4";
 
+/**
+ * Queue URLs address the APP, not the route: fal-ai/flux/schnell submits at
+ * queue.fal.run/fal-ai/flux/schnell but its request lives at
+ * queue.fal.run/fal-ai/flux/requests/<id>. First two path segments.
+ */
+const appId = (endpointId) => endpointId.split("/").slice(0, 2).join("/");
+const requestBase = (endpointId, requestId) => `${QUEUE}/${appId(endpointId)}/requests/${requestId}`;
+
 const resolveRef = (ref) => String(ref ?? "").replace(/\$\{([A-Z0-9_]+)\}/g, (_, n) => process.env[n] ?? "");
 
 export default async function activate(ctx) {
@@ -47,7 +55,7 @@ export default async function activate(ctx) {
   async function falJson(url, init = {}, timeoutMs = 60_000) {
     const res = await fetch(url, { ...init, headers: { ...auth(), ...(init.headers ?? {}) }, signal: AbortSignal.timeout(timeoutMs) });
     const body = await res.text();
-    if (!res.ok) throw new Error(`fal ${res.status} ${url.replace(QUEUE, "queue").replace(API, "api")}: ${body.slice(0, 400)}`);
+    if (!res.ok) throw new Error(`fal ${res.status} ${url}: ${body.slice(0, 400)}`);
     try {
       return JSON.parse(body);
     } catch {
@@ -146,8 +154,8 @@ export default async function activate(ctx) {
     return v;
   }
 
-  async function finish(call, endpointId, requestId, note) {
-    const result = await falJson(`${QUEUE}/${endpointId}/requests/${requestId}/response`, {}, 120_000);
+  async function finish(call, endpointId, requestId, note, responseUrl) {
+    const result = await falJson(responseUrl ?? requestBase(endpointId, requestId), {}, 120_000);
     const artifacts = await saveOutputs(call, endpointId, requestId, result, note);
     const costUsd = await estimateCost(endpointId);
     ctx.usage.record({ workspace: call.workspace, agent: call.agent, kind: "fal", model: endpointId, costUsd });
@@ -271,11 +279,15 @@ export default async function activate(ctx) {
         body: JSON.stringify(input),
       });
       ctx.log.info(`@${call.agent} fal ${endpointId} → request ${sub.request_id}`);
+      // the submit reply carries the canonical request URLs — use them rather
+      // than rebuilding paths (the queue addresses the app, not the route)
+      const statusUrl = `${sub.status_url ?? `${requestBase(endpointId, sub.request_id)}/status`}?logs=1`;
+      const responseUrl = sub.response_url ?? requestBase(endpointId, sub.request_id);
       const started = Date.now();
       let last = null;
       while (Date.now() - started < waitMs) {
-        last = await falJson(`${QUEUE}/${endpointId}/requests/${sub.request_id}/status?logs=1`, {}, 30_000);
-        if (last.status === "COMPLETED") return finish(call, endpointId, sub.request_id, note);
+        last = await falJson(statusUrl, {}, 30_000);
+        if (last.status === "COMPLETED") return finish(call, endpointId, sub.request_id, note, responseUrl);
         await new Promise((r) => setTimeout(r, POLL_MS));
       }
       return json({
@@ -303,7 +315,7 @@ export default async function activate(ctx) {
       const waitMs = Number(args.wait_s ?? 0) * 1000;
       const started = Date.now();
       for (;;) {
-        const st = await falJson(`${QUEUE}/${endpointId}/requests/${rid}/status?logs=1`, {}, 30_000);
+        const st = await falJson(`${requestBase(endpointId, rid)}/status?logs=1`, {}, 30_000);
         if (st.status === "COMPLETED") return finish(call, endpointId, rid, String(args.note ?? ""));
         if (Date.now() - started >= waitMs) return json({ request_id: rid, status: st.status, queue_position: st.queue_position, last_log: st.logs?.at(-1)?.message });
         await new Promise((r) => setTimeout(r, POLL_MS));
@@ -316,7 +328,7 @@ export default async function activate(ctx) {
     description: "Cancel a queued fal.ai request that has not started yet (already-running work cannot be cancelled and is billed).",
     schema: { endpoint_id: z.string(), request_id: z.string() },
     handler: async (args) => {
-      const res = await fetch(`${QUEUE}/${String(args.endpoint_id)}/requests/${String(args.request_id)}/cancel`, { method: "PUT", headers: auth(), signal: AbortSignal.timeout(30_000) });
+      const res = await fetch(`${requestBase(String(args.endpoint_id), String(args.request_id))}/cancel`, { method: "PUT", headers: auth(), signal: AbortSignal.timeout(30_000) });
       const body = await res.json().catch(() => ({}));
       return json({ http: res.status, ...body });
     },
