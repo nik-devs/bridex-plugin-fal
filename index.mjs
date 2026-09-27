@@ -55,7 +55,14 @@ export default async function activate(ctx) {
   async function falJson(url, init = {}, timeoutMs = 60_000) {
     const res = await fetch(url, { ...init, headers: { ...auth(), ...(init.headers ?? {}) }, signal: AbortSignal.timeout(timeoutMs) });
     const body = await res.text();
-    if (!res.ok) throw new Error(`fal ${res.status} ${url}: ${body.slice(0, 400)}`);
+    if (!res.ok) {
+      // an empty balance («User is locked. Reason: Exhausted balance», 402/403):
+      // one needs-a-person card in the inbox, not a silent failed run
+      // (ctx.billing exists on newer Bridex cores; older ones just skip it)
+      if (res.status === 402 || /exhausted balance|insufficient (credits|funds|balance)|payment required/i.test(body))
+        ctx.billing?.outOfFunds?.({ provider: "fal.ai", what: "fal generations (fal plugin)", detail: body.slice(0, 400) });
+      throw new Error(`fal ${res.status} ${url}: ${body.slice(0, 400)}`);
+    }
     try {
       return JSON.parse(body);
     } catch {
