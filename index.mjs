@@ -102,7 +102,7 @@ export default async function activate(ctx) {
   }
 
   /** Download outputs into artifacts/<task|fal>/ with provenance; returns relative paths. */
-  async function saveOutputs(call, endpointId, requestId, result, note) {
+  async function saveOutputs(call, endpointId, requestId, result, note, generation) {
     const files = collectFiles(result);
     if (!files.length) return [];
     const folder = call.taskId ?? "fal";
@@ -132,6 +132,8 @@ export default async function activate(ctx) {
         taskId: call.taskId,
         description: `fal.ai ${endpointId} · request ${requestId} · ${note}`.slice(0, 300),
         action: "generated",
+        // how it was made: shown in the artifact's meta (newer Bridex cores)
+        generation,
       });
       rels.push(rel);
     }
@@ -161,10 +163,16 @@ export default async function activate(ctx) {
     return v;
   }
 
-  async function finish(call, endpointId, requestId, note, responseUrl, trackedId) {
+  async function finish(call, endpointId, requestId, note, responseUrl, trackedId, input) {
     const result = await falJson(responseUrl ?? requestBase(endpointId, requestId), {}, 120_000);
-    const artifacts = await saveOutputs(call, endpointId, requestId, result, note);
     const costUsd = await estimateCost(endpointId);
+    const artifacts = await saveOutputs(call, endpointId, requestId, result, note, {
+      provider: "fal.ai",
+      model: endpointId,
+      externalId: requestId,
+      ...(input ? { params: input } : {}),
+      ...(costUsd ? { costUsd } : {}),
+    });
     ctx.usage.record({ workspace: call.workspace, agent: call.agent, kind: "fal", model: endpointId, costUsd });
     if (trackedId && ctx.jobs) ctx.jobs.settle(trackedId, { status: "succeeded", result: { artifacts, costUsd } });
     return json({
@@ -301,7 +309,7 @@ export default async function activate(ctx) {
       let last = null;
       while (Date.now() - started < waitMs) {
         last = await falJson(statusUrl, {}, 30_000);
-        if (last.status === "COMPLETED") return finish(call, endpointId, sub.request_id, note, responseUrl, tracked);
+        if (last.status === "COMPLETED") return finish(call, endpointId, sub.request_id, note, responseUrl, tracked, args.input);
         await new Promise((r) => setTimeout(r, POLL_MS));
       }
       return json({
