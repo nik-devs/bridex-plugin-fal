@@ -4,7 +4,7 @@
 # artifacts with provenance and records spend — in-process facilities that a
 # catalog "tool" plugin (out-of-process, flat schemas) does not have.
 name: fal
-version: 0.2.3
+version: 0.2.4
 kind: integration
 description: Any fal.ai model for agents — video, image, audio. Outputs land in the task's artifacts with a cost estimate.
 entry: index.mjs

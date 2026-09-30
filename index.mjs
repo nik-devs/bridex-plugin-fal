@@ -122,7 +122,9 @@ export default async function activate(ctx) {
       const mime = f.contentType ?? (res.headers.get("content-type") ?? "").split(";")[0];
       const urlExt = (new URL(f.url).pathname.split(".").pop() ?? "").toLowerCase();
       const ext = EXT_BY_MIME[mime] ?? (urlExt && urlExt.length <= 4 ? urlExt : "bin");
-      const name = `${slug}-${requestId.slice(0, 8)}${files.length > 1 ? `-${i + 1}` : ""}.${ext}`;
+      // the tail of the id: fal request ids are time-ordered, so two requests started together
+      // shared their first 8 characters and the second result overwrote the first
+      const name = `${slug}-${requestId.replace(/-/g, "").slice(-10)}${files.length > 1 ? `-${i + 1}` : ""}.${ext}`;
       const rel = path.posix.join(folder, name);
       const abs = path.join(ctx.paths.workspaceArtifacts(call.workspace), rel);
       fs.mkdirSync(path.dirname(abs), { recursive: true });
