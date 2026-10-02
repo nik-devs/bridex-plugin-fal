@@ -4,7 +4,7 @@
 # artifacts with provenance and records spend — in-process facilities that a
 # catalog "tool" plugin (out-of-process, flat schemas) does not have.
 name: fal
-version: 0.2.4
+version: 0.3.0
 kind: integration
 description: Any fal.ai model for agents — video, image, audio. Outputs land in the task's artifacts with a cost estimate.
 entry: index.mjs
@@ -27,3 +27,16 @@ config_schema:
       minimum: 10
       maximum: 1500
       description: How long fal_run waits for a result before returning a request_id
+    admin_key:
+      type: string
+      title: Admin key (balance)
+      secret: true
+      credential: FAL_ADMIN_KEY
+      placeholder: "${FAL_ADMIN_KEY}"
+      description: Optional — an ADMIN key shows the fal balance on the dashboard; the API key above cannot read it
+    low_balance_usd:
+      type: number
+      title: Low balance, $
+      default: 5
+      minimum: 0
+      description: Below this the balance tile is marked as running out

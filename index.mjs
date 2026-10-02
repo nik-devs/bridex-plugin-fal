@@ -403,5 +403,33 @@ export default async function activate(ctx) {
     ctx.onShutdown(() => clearInterval(watcher));
   }
 
+  // dashboard balance: only an ADMIN key can read it (the API key gets 403), so
+  // the tile shows up when one is configured; cached five minutes
+  if (typeof ctx.registerStat === "function") {
+    let cache = { at: 0, tiles: [] };
+    ctx.registerStat(async () => {
+      const admin = resolveRef(cfg.admin_key ?? "${FAL_ADMIN_KEY}");
+      if (!admin) return [];
+      if (Date.now() - cache.at < 300_000) return cache.tiles;
+      const res = await fetch("https://api.fal.ai/v1/account/billing?expand=credits", {
+        headers: { Authorization: `Key ${admin}` },
+        signal: AbortSignal.timeout(2500),
+      });
+      let tiles;
+      if (res.status === 401 || res.status === 403) {
+        tiles = [{ label: "fal.ai", value: "—", sub: "the admin key cannot read billing", balance: null }];
+      } else {
+        if (!res.ok) throw new Error(`fal billing HTTP ${res.status}`);
+        const body = await res.json();
+        const left = Number(body?.credits?.current_balance);
+        if (!Number.isFinite(left)) throw new Error("fal billing: no credits.current_balance");
+        const low = left < Number(cfg.low_balance_usd ?? 5);
+        tiles = [{ label: "fal.ai", value: `$${left < 100 ? left.toFixed(2) : Math.round(left)}`, sub: low ? "running out" : "balance", low }];
+      }
+      cache = { at: Date.now(), tiles };
+      return tiles;
+    });
+  }
+
   ctx.log.info(`fal.ai tools registered (fal_models, fal_schema, fal_upload, fal_run, fal_result, fal_cancel)${ctx.jobs ? " + job watcher" : ""}`);
 }
